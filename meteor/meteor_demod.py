@@ -351,6 +351,9 @@ class meteor_demod(gr.top_block, Qt.QWidget):
 def argument_parser():
     description = 'Meteor M-N2 LRPT (72k) OQPSK demodulator'
     parser = ArgumentParser(description=description)
+    parser.add_argument(
+        "--sample-rate", dest="sample_rate", type=intx, default=750000,
+        help="Set Input sample rate [default=%(default)r]")
     return parser
 
 
@@ -360,7 +363,7 @@ def main(top_block_cls=meteor_demod, options=None):
 
     qapp = Qt.QApplication(sys.argv)
 
-    tb = top_block_cls()
+    tb = top_block_cls(sample_rate=options.sample_rate)
 
     tb.start()
     tb.flowgraph_started.set()

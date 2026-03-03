@@ -503,7 +503,7 @@ blocks:
     hide: none
     label: Input sample rate
     short_id: ''
-    type: ''
+    type: intx
     value: '750000'
   states:
     bus_sink: false
