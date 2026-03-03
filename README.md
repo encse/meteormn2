@@ -78,6 +78,6 @@ It would be hard to port this to python, but we will see.
 
 ## Known issues
 
-I still need to implement rotation check. If the signal gets locked at PI/2 or
-3/2 * Pi, the Viterbi algorithm will not work and no meaningful data comes out
+I still need to implement rotation check. If the signal gets locked at π/2 or
+3π/2, the Viterbi algorithm will not work and no meaningful data comes out
 of the pipeline.
