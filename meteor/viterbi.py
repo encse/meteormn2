@@ -1,187 +1,137 @@
-# -*- coding: utf-8 -*-
-
-#
-# SPDX-License-Identifier: GPL-3.0
-#
-# GNU Radio Python Flow Graph
-# Title: Not titled yet
-# GNU Radio version: 3.10.12.0
-
+import ctypes
 import numpy as np
-from gnuradio import gr
-from gnuradio import gr
-from gnuradio import fec
-
-def _parity_u32(x: int) -> int:
-    # parity of integer bits (0/1)
-    x ^= x >> 16
-    x ^= x >> 8
-    x ^= x >> 4
-    x &= 0xF
-    return (0x6996 >> x) & 1
+from gnuradio import gr, fec
 
 
-def _conv_encode_k7_r12(bits_u8: np.ndarray, poly0: int, poly1: int) -> np.ndarray:
+def ndarray_to_capsule(arr):
     """
-    Convolutional encode K=7, rate 1/2, polys given like the C++ code.
-    If a poly is negative, we invert that output bit (matches your mapping).
-    Output is unpacked bits (0/1) length = 2*len(bits).
+    Wrap a contiguous numpy array data pointer into a PyCapsule.
+    The numpy array must stay alive while the capsule is used.
     """
-    inv0 = 1 if poly0 < 0 else 0
-    inv1 = 1 if poly1 < 0 else 0
-    p0 = abs(int(poly0))
-    p1 = abs(int(poly1))
+    if not arr.flags["C_CONTIGUOUS"]:
+        raise ValueError("Array must be C-contiguous")
 
-    reg = 0
-    out = np.empty(bits_u8.size * 2, dtype=np.uint8)
+    ptr = ctypes.c_void_p(arr.ctypes.data)
+    pycapsule_new = ctypes.pythonapi.PyCapsule_New
+    pycapsule_new.restype = ctypes.py_object
+    pycapsule_new.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    return pycapsule_new(ptr, None, None)
 
-    # K=7 => 7-bit shift reg. We'll keep it in lower 7 bits.
-    # Convention here: shift left, OR in new bit at LSB (common in many encoders).
-    # IMPORTANT: if your encoder uses opposite bit order, BER will differ.
-    # But for CCSDS K=7 this convention typically matches common implementations.
-    for i, b in enumerate(bits_u8):
-        bit = int(b) & 1
-        reg = ((reg << 1) | bit) & 0x7F
+class Viterbi(gr.basic_block):
 
-        o0 = _parity_u32(reg & p0) ^ inv0
-        o1 = _parity_u32(reg & p1) ^ inv1
+    BLOCK_SOFT = 2048
+    BLOCK_BITS = BLOCK_SOFT // 2
 
-        out[2 * i + 0] = o0
-        out[2 * i + 1] = o1
+    def __init__(self):
 
-    return out
-
-
-class ber_ccsds_soft_decoded(gr.basic_block):
-    """
-    Compute SatDump-like BER proxy:
-
-      raw_u8 derived from soft float:
-        raw_u8 = round(soft*127 + 128) clipped to [0..255]
-      skip raw_u8 == 128
-      hard = (raw_u8 > 127)
-      compare hard to re-encoded bits from decoded bits
-      ber = (errors/total) * scale
-
-    Inputs:
-      0: soft float stream (carrier)
-      1: decoded bits stream (char, values 0/1, length = soft/2)
-
-    Output:
-      0: float BER stream (hold-last; updates when a full window is available)
-    """
-
-    def __init__(self, poly0=79, poly1=109, window=4096, erase_eps=0.0, scale=2.5):
         gr.basic_block.__init__(
             self,
-            name="ber_ccsds_soft_decoded",
-            in_sig=[np.float32, np.uint8],
-            out_sig=[np.float32],
+            name="viterbi",
+            in_sig=[np.float32],
+            out_sig=[np.uint8, np.float32],
         )
 
-        self._poly0 = int(poly0)
-        self._poly1 = int(poly1)
-        self._window = int(window)
-        self._scale = float(scale)
-        self._erase_eps = float(erase_eps)
+        self.set_output_multiple(self.BLOCK_BITS)
 
-        if self._window <= 0 or (self._window % 2) != 0:
-            raise ValueError("window must be positive and even (rate 1/2)")
+        polys = [109,79]
 
-        self._soft_buf = np.empty(self._window, dtype=np.float32)
-        self._dec_buf = np.empty(self._window // 2, dtype=np.uint8)
-        self._soft_fill = 0
-        self._dec_fill = 0
+        self.dec = fec.cc_decoder.make(
+            self.BLOCK_BITS,7,2,polys,0,-1,fec.CC_STREAMING,False
+        )
 
-        self._last = 10.0 
+        self.enc = fec.cc_encoder.make(
+            self.BLOCK_BITS,7,2,polys,0,fec.CC_STREAMING,False
+        )
+        self.history_overlap = int(self.dec.get_history())
+
+        self.history_overlap = 0
+
+        if self.history_overlap < 0 or self.history_overlap % 2 != 0:
+            raise RuntimeError("Decoder history is invalid")
+
+        # buffers
+
+        self.soft_float = np.zeros(self.history_overlap + self.BLOCK_SOFT, dtype=np.float32)
+        self.soft_u8 = np.zeros(self.history_overlap + self.BLOCK_SOFT, dtype=np.uint8)
+
+        self.decoded = np.zeros(self.history_overlap // 2 + self.BLOCK_BITS, dtype=np.uint8)
+        self.reencoded = np.zeros(self.history_overlap + self.BLOCK_SOFT, dtype=np.uint8)
+
+        # capsules
+
+        self.soft_caps = ndarray_to_capsule(self.soft_u8)
+        self.dec_caps = ndarray_to_capsule(self.decoded)
+        self.renc_caps = ndarray_to_capsule(self.reencoded)
+
+        self.prev_soft_float = np.zeros(self.history_overlap, dtype=np.float32)
+
+    def float_to_soft(self):
+
+        scaled = np.rint(self.soft_float * 127.0 + 128.0)
+        scaled = np.clip(scaled, 0, 255)
+        self.soft_u8[:] = scaled.astype(np.uint8)
+
+    def compute_ber(self):
+
+        raw = self.soft_u8
+
+        mask = raw != 128
+        total = int(mask.sum())
+
+        if total == 0:
+            return 10.0
+
+        hard = (raw > 127).astype(np.uint8)
+
+        errors = int((hard[mask] != self.reencoded[mask]).sum())
+
+        return float(errors) / float(total) * 2.5
 
     def general_work(self, input_items, output_items):
+
         soft_in = input_items[0]
-        dec_in = input_items[1]
-        out = output_items[0]
+        bits_out = output_items[0]
+        ber_out = output_items[1]
 
-        n_soft = len(soft_in)
-        n_dec = len(dec_in)
-
-        # We need soft and decoded in the fixed ratio: window soft : window/2 decoded.
-        # Consume as much as we can to fill buffers.
-        soft_needed = self._window - self._soft_fill
-        dec_needed = (self._window // 2) - self._dec_fill
-
-        take_soft = min(n_soft, soft_needed)
-        take_dec = min(n_dec, dec_needed)
-
-        if take_soft > 0:
-            self._soft_buf[self._soft_fill:self._soft_fill + take_soft] = soft_in[:take_soft]
-            self._soft_fill += take_soft
-            self.consume(0, take_soft)
-
-        if take_dec > 0:
-            # ensure 0/1
-            self._dec_buf[self._dec_fill:self._dec_fill + take_dec] = (dec_in[:take_dec] & 1).astype(np.uint8)
-            self._dec_fill += take_dec
-            self.consume(1, take_dec)
-
-        # If we have a full window, compute BER and reset buffers
-        if self._soft_fill == self._window and self._dec_fill == (self._window // 2):
-            # float soft -> raw_u8 
-            # 0.0 maps to 128 exactly (after rounding)
-            raw = np.rint(self._soft_buf * 127.0 + 128.0)
-            raw = np.clip(raw, 0.0, 255.0).astype(np.uint8)
-
-            if self._erase_eps > 0.0:
-                er = np.abs(self._soft_buf) <= self._erase_eps
-                raw[er] = 128
-
-            # re-encode decoded bits
-            renc = _conv_encode_k7_r12(self._dec_buf, self._poly0, self._poly1)
-
-            mask = (raw != 128)
-            total = int(mask.sum())
-            if total > 0:
-                hard = (raw > 127).astype(np.uint8)
-                errors = int((hard[mask] != renc[mask]).sum())
-                self._last = (errors / total) * self._scale
-            else:
-                self._last = 10.0
-
-            self._soft_fill = 0
-            self._dec_fill = 0
-
-        # Output: hold-last value (emit as many as scheduler requests)
-        n_out = len(out)
-        if n_out == 0:
+        if len(soft_in) < self.BLOCK_SOFT:
             return 0
-        out[:] = np.float32(self._last)
-        return n_out
 
+        if len(bits_out) < self.BLOCK_BITS:
+            return 0
 
-class Viterbi(gr.hier_block2):
-    def __init__(self):
-        gr.hier_block2.__init__(
-            self, "viterbi",
-            gr.io_signature(1, 1, gr.sizeof_float),
-            gr.io_signature(2, 2, [gr.sizeof_char, gr.sizeof_float]),
+        if len(ber_out) < self.BLOCK_BITS:
+            return 0
+
+        # Build one decoder work block:
+        # [previous history overlap | new input samples]
+        self.soft_float[:self.history_overlap] = self.prev_soft_float
+        self.soft_float[self.history_overlap:] = soft_in[:self.BLOCK_SOFT]
+
+        # Convert signed float soft samples to unsigned uchar soft samples
+        self.float_to_soft()
+
+        n = self.dec.generic_work(
+            ndarray_to_capsule(self.soft_u8),
+            ndarray_to_capsule(self.decoded)
         )
-        
-        polys = [109, 79]
-    
 
-        self.dec_cc = dec_cc = fec.cc_decoder.make(
-            80, 7, 2, polys, 0, -1, fec.CC_STREAMING, False)
+        # Re-encode the decoded bits back to coded form
+        self.enc.generic_work(
+            ndarray_to_capsule(self.decoded),
+            ndarray_to_capsule(self.reencoded)
+        )
 
-        self.vit = fec.extended_decoder(
-            decoder_obj_list=dec_cc, threading=None, ann=None,
-            puncpat='11', integration_period=10000)
+        # Compute BER on the same work block
+        ber = self.compute_ber()
 
-        self.connect((self.vit, 0), (self, 0))
-        self.connect((self, 0), (self.vit, 0))
+        # Publish outputs
+        bits_out[:self.BLOCK_BITS] = self.decoded[-self.BLOCK_BITS:]
+        ber_out[:self.BLOCK_BITS] = ber
 
-        self.ber = ber_ccsds_soft_decoded(poly0=polys[0], poly1=polys[1], window=4096, erase_eps=0.0, scale=2.5)
+        # Save the tail of the current block for the next call
+        if self.history_overlap > 0:
+            self.prev_soft_float[:] = self.soft_float[-self.history_overlap:]
 
-        self.connect((self, 0), (self.ber, 0))          # soft float
-        self.connect((self.vit, 0), (self.ber, 1))      # decoded bits 0/1
-        self.connect((self.ber, 0), (self, 1))          # BER float -> out1
+        self.consume(0, self.BLOCK_SOFT)
 
-
-
+        return self.BLOCK_BITS
