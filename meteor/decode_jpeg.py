@@ -269,20 +269,19 @@ class Image:
 
         bitio = BitIOConst(payload)
 
-        zdct = [0.0] * 64
         dct = [0.0] * 64
-
         dqt = fill_dqt_by_q(qf)
-        prev_dc = 0.0 
+        prev_dc = 0.0
 
         strip = [[0 for _ in range(14 * 8)] for _ in range(8)]
 
-
         for m in range(14):
+            zdct = [0.0] * 64
+            block_ok = True
 
             dc_cat = self._dc_lookup[bitio.peek_bits(16)]
             if dc_cat == -1:
-                raise ValueError("Bad DC Huffman code")
+                break
 
             bitio.advance_bits(DC_CAT_OFF[dc_cat])
             n = bitio.fetch_bits(dc_cat)
@@ -294,19 +293,34 @@ class Image:
             while k < 64:
                 ac = self._ac_lookup[bitio.peek_bits(16)]
                 if ac == -1:
-                    raise ValueError("Bad AC Huffman code")
+                    block_ok = False
+                    break
 
                 ac_len = self._ac_table[ac].length
-                ac_run =  self._ac_table[ac].run
-                ac_size =  self._ac_table[ac].size
+                ac_run = self._ac_table[ac].run
+                ac_size = self._ac_table[ac].size
                 bitio.advance_bits(ac_len)
 
-
+                # EOB
                 if ac_run == 0 and ac_size == 0:
-                    i = k
-                    while i < 64:
-                        zdct[i] = 0.0
-                        i += 1
+                    while k < 64:
+                        zdct[k] = 0.0
+                        k += 1
+                    break
+
+                # ZRL = 16 zeros
+                if ac_run == 15 and ac_size == 0:
+                    if k + 16 > 64:
+                        block_ok = False
+                        break
+                    for _ in range(16):
+                        zdct[k] = 0.0
+                        k += 1
+                    continue
+
+                # normal run
+                if k + ac_run > 64:
+                    block_ok = False
                     break
 
                 for _ in range(ac_run):
@@ -315,12 +329,14 @@ class Image:
 
                 if ac_size != 0:
                     n = bitio.fetch_bits(ac_size)
+                    if k >= 64:
+                        block_ok = False
+                        break
                     zdct[k] = float(map_range(ac_size, n))
                     k += 1
-                else:
-                    if ac_run == 15:
-                        zdct[k] = 0.0
-                        k += 1
+
+            if not block_ok:
+                break
 
             for i in range(64):
                 dct[i] = float(zdct[ZIGZAG[i]] * dqt[i])

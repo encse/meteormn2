@@ -70,7 +70,7 @@ class oqpsk_demodulator(gr.hier_block2):
             128,
             [])
         self.digital_mpsk_snr_est_cc_0 = digital.mpsk_snr_est_cc(2, 10000, 0.001)
-        self.digital_costas_loop_cc_0 = digital.costas_loop_cc(0.002, 4, False)
+        self.digital_costas_loop_cc_0 = digital.costas_loop_cc(0.005, 4, False)
         self.blocks_null_sink_0_0 = blocks.null_sink(gr.sizeof_float*1)
         self.blocks_null_sink_0 = blocks.null_sink(gr.sizeof_float*1)
         self.blocks_multiply_const_vxx_0 = blocks.multiply_const_ff((1.0 / (2.0 * 3.141592654) * pipeline_sample_rate))

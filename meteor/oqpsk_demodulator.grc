@@ -204,7 +204,7 @@ blocks:
     minoutbuf: '0'
     order: '4'
     use_snr: 'False'
-    w: '0.002'
+    w: '0.005'
   states:
     bus_sink: false
     bus_source: false
