@@ -313,7 +313,7 @@ class meteor_demod(gr.top_block, Qt.QWidget):
         for c in range(1, 2):
             self.top_grid_layout.setColumnStretch(c, 1)
         self.ccsds_image_decoder_0 = CcsdsImageDecoder()
-        self.blocks_file_source_0 = blocks.file_source(gr.sizeof_gr_complex*1, '/Users/encse/projects/radio/2026-03-15_11-49-20_166666SPS_137900000Hz.cf32', False, 0, 0)
+        self.blocks_file_source_0 = blocks.file_source(gr.sizeof_gr_complex*1, '/Users/encse/projects/radio/2026-03-15_09-19-23_166666SPS_137900000Hz.cf32', False, 0, 0)
         self.blocks_file_source_0.set_begin_tag(pmt.PMT_NIL)
 
 
