@@ -44,28 +44,44 @@ class Viterbi(gr.basic_block):
         )
         self.history_overlap = int(self.dec.get_history())
 
-        self.history_overlap = 0
-
         if self.history_overlap < 0 or self.history_overlap % 2 != 0:
             raise RuntimeError("Decoder history is invalid")
 
+        self.history_iq = self.history_overlap // 2
+
         # buffers
 
-        self.iq_interleaved = np.zeros(self.BLOCK_SOFT, dtype=np.float32)
+        self.prev_iq = np.zeros(self.history_iq, dtype=np.complex64)
+        self.full_iq = np.zeros(self.history_iq + self.BLOCK_BITS, dtype=np.complex64)
 
         self.soft_float = np.zeros(self.history_overlap + self.BLOCK_SOFT, dtype=np.float32)
         self.soft_u8 = np.zeros(self.history_overlap + self.BLOCK_SOFT, dtype=np.uint8)
 
-        self.decoded = np.zeros(self.history_overlap // 2 + self.BLOCK_BITS, dtype=np.uint8)
+        self.decoded_a = np.zeros(self.history_iq + self.BLOCK_BITS, dtype=np.uint8)
+        self.decoded_b = np.zeros(self.history_iq + self.BLOCK_BITS, dtype=np.uint8)
+
         self.reencoded = np.zeros(self.history_overlap + self.BLOCK_SOFT, dtype=np.uint8)
 
+       
         # capsules
-
         self.soft_caps = ndarray_to_capsule(self.soft_u8)
-        self.dec_caps = ndarray_to_capsule(self.decoded)
+        self.decoded_a_caps = ndarray_to_capsule(self.decoded_a)
+        self.decoded_b_caps = ndarray_to_capsule(self.decoded_b)
         self.renc_caps = ndarray_to_capsule(self.reencoded)
 
-        self.prev_soft_float = np.zeros(self.history_overlap, dtype=np.float32)
+    def build_soft_input(self, iq_block, multiply_by_j):
+        if self.history_iq > 0:
+            self.full_iq[:self.history_iq] = self.prev_iq
+
+        self.full_iq[self.history_iq:] = iq_block
+
+        if multiply_by_j:
+            view = self.full_iq * np.complex64(1j)
+        else:
+            view = self.full_iq
+
+        self.soft_float[0::2] = view.real
+        self.soft_float[1::2] = view.imag
 
     def float_to_soft(self):
 
@@ -73,6 +89,12 @@ class Viterbi(gr.basic_block):
         scaled = np.clip(scaled, 0, 255)
         self.soft_u8[:] = scaled.astype(np.uint8)
 
+    def decode_and_measure(self, decoded_caps):
+        self.float_to_soft()
+        self.dec.generic_work(self.soft_caps, decoded_caps)
+        self.enc.generic_work(decoded_caps, self.renc_caps)
+        return self.compute_ber()
+    
     def compute_ber(self):
 
         raw = self.soft_u8
@@ -90,7 +112,6 @@ class Viterbi(gr.basic_block):
         return float(errors) / float(total) * 2.5
 
     def general_work(self, input_items, output_items):
-
         iq_in = input_items[0]
         bits_out = output_items[0]
         ber_out = output_items[1]
@@ -104,31 +125,23 @@ class Viterbi(gr.basic_block):
         if len(ber_out) < self.BLOCK_BITS:
             return 0
 
-        # Build one decoder work block:
-        # [previous history overlap | new input samples]
-        self.soft_float[:self.history_overlap] = self.prev_soft_float
-        self.soft_float[self.history_overlap:][0::2] = iq_in[:self.BLOCK_BITS].real
-        self.soft_float[self.history_overlap:][1::2] = iq_in[:self.BLOCK_BITS].imag
+        iq_block = iq_in[:self.BLOCK_BITS]
 
-        # Convert signed float soft samples to unsigned uchar soft samples
-        self.float_to_soft()
+        self.build_soft_input(iq_block, multiply_by_j=False)
+        ber_a = self.decode_and_measure(self.decoded_a_caps)
 
-        self.dec.generic_work(self.soft_caps, self.dec_caps)
+        self.build_soft_input(iq_block, multiply_by_j=True)
+        ber_b = self.decode_and_measure(self.decoded_b_caps)
 
-        # Re-encode the decoded bits back to coded form
-        self.enc.generic_work(self.dec_caps, self.renc_caps)
+        if ber_b < ber_a:
+            bits_out[:self.BLOCK_BITS] = self.decoded_b[-self.BLOCK_BITS:]
+            ber_out[:self.BLOCK_BITS] = ber_b
+        else:
+            bits_out[:self.BLOCK_BITS] = self.decoded_a[-self.BLOCK_BITS:]
+            ber_out[:self.BLOCK_BITS] = ber_a
 
-        # Compute BER on the same work block
-        ber = self.compute_ber()
-
-        # Publish outputs
-        bits_out[:self.BLOCK_BITS] = self.decoded[-self.BLOCK_BITS:]
-        ber_out[:self.BLOCK_BITS] = ber
-
-        # Save the tail of the current block for the next call
-        if self.history_overlap > 0:
-            self.prev_soft_float[:] = self.soft_float[-self.history_overlap:]
+        if self.history_iq > 0:
+            self.prev_iq[:] = iq_block[-self.history_iq:]
 
         self.consume(0, self.BLOCK_BITS)
-
         return self.BLOCK_BITS
