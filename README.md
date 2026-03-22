@@ -16,7 +16,12 @@ is only about the extraction of data.
 The project is organized into smaller GNU radio hier blocks (files with .grc and
 a matching .py and block.yml) and OOT modules (files without .grc).
 
-# Usage
+# Usage from command line
+
+```
+python3 meteor/meteor_extractor.py 2026-02-13_07-39-09_256000SPS_137900000Hz.cf32
+```
+# Usage from GNU radio
 
 ![overview](pics/overview.jpg)
 
