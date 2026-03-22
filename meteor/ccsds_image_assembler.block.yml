@@ -1,0 +1,22 @@
+id: ccsds_image_assembler
+label: CCSDS Image Assembler
+category: '[Meteor]'
+
+parameters:
+  - id: width
+    label: Image Width
+    dtype: int
+    default: 1568
+
+inputs:
+  - domain: message
+    id: in
+
+templates:
+  imports: |
+    from ccsds_image_assembler import CcsdsImageAssembler
+
+  make: |
+    CcsdsImageAssembler(width=${width})
+
+file_format: 1
