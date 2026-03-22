@@ -18,21 +18,6 @@ a matching .py and block.yml) and OOT modules (files without .grc).
 
 # Usage from command line
 
-```
-python3 meteor/meteor_extractor.py 2026-02-13_07-39-09_256000SPS_137900000Hz.cf32
-```
-# Usage from GNU radio
-
-![overview](pics/overview.jpg)
-
-Open gnuradio-companion with
-
-```bash
-GRC_HIER_PATH=./meteor GRC_BLOCKS_PATH=. gnuradio-companion
-```
-
-The main entry point for demonstration is meteor_demo.grc.
-
 You will need a cf32 input file. These can be created using
 [Satdump](https://github.com/SatDump/SatDump)'s Recording features. The file
 name has the format of
@@ -46,6 +31,26 @@ For example
 ```
 2026-02-13_07-39-09_256000SPS_137900000Hz.cf32
 ```
+
+then use:
+
+```
+python3 meteor/meteor_extractor.py 2026-02-13_07-39-09_256000SPS_137900000Hz.cf32
+```
+
+This should generate an image file in the same directory.
+
+# Usage from GNU radio
+
+![overview](pics/overview.jpg)
+
+Open gnuradio-companion with
+
+```bash
+GRC_HIER_PATH=./meteor GRC_BLOCKS_PATH=. gnuradio-companion
+```
+
+The main entry point for demonstration is meteor_demo.grc.
 
 Select the input file in the flowgraph, and set the sample rate parameter to
 your sps (e.g. 256000). Then click the play button.
